@@ -4,7 +4,7 @@ synopsis:            SQLite backend for the Selda database EDSL.
 description:         SQLite backend for the Selda database EDSL.
 homepage:            https://github.com/valderman/selda
 license:             MIT
-license-file:        LICENSE
+license-file:        ../LICENSE
 author:              Anton Ekblad
 maintainer:          anton@ekblad.cc
 category:            Database
