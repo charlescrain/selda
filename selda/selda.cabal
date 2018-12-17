@@ -1,5 +1,5 @@
 name:                selda
-version:             0.3.3.1
+version:             0.3.4.0
 synopsis:            Multi-backend, high-level EDSL for interacting with SQL databases.
 description:         This package provides an EDSL for writing portable, type-safe, high-level
                      database code. Its feature set includes querying and modifying databases,
@@ -20,7 +20,7 @@ category:            Database
 build-type:          Simple
 extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
-tested-with:         GHC == 7.10.3, GHC == 8.0.2, GHC == 8.2.1, GHC == 8.4.1
+tested-with:         GHC == 7.10.3, GHC == 8.0.2, GHC == 8.2.1, GHC == 8.4.1, GHC == 8.6.1
 
 extra-source-files:
   README.md
@@ -47,6 +47,7 @@ library
     Database.Selda
     Database.Selda.Backend
     Database.Selda.Migrations
+    Database.Selda.Nullable
     Database.Selda.SqlType
     Database.Selda.Unsafe
     Database.Selda.Validation
@@ -102,6 +103,9 @@ library
   if impl(ghc < 7.11)
     build-depends:
       transformers  >=0.4 && <0.6
+  if impl(ghc < 8.1) && impl(ghc >= 8.0)
+    build-depends:
+      ghc-prim >= 0.5.0.0
   if impl(ghc >= 8.2)
     build-depends:
       hashable >= 1.2.6.1

@@ -2,12 +2,15 @@
 {-# LANGUAGE TypeFamilies, TypeOperators, FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances, MultiParamTypeClasses, OverloadedStrings #-}
 {-# LANGUAGE FlexibleContexts, ScopedTypeVariables, ConstraintKinds #-}
-{-# LANGUAGE GADTs, CPP, DeriveGeneric, DataKinds #-}
+{-# LANGUAGE GADTs, CPP, DeriveGeneric, DataKinds, MagicHash #-}
+#if MIN_VERSION_base(4, 10, 0)
+{-# LANGUAGE TypeApplications #-}
+#endif
 module Database.Selda.Table
-  ( Attr (..), Table (..), Attribute
+  ( SelectorGroup, Group (..), Attr (..), Table (..), Attribute
   , ColInfo (..), ColAttr (..), IndexMethod (..)
   , ForeignKey (..)
-  , table, tableFieldMod -- , tableWithSelectors, selectors
+  , table, tableFieldMod
   , primary, autoPrimary, untypedAutoPrimary, unique
   , index, indexUsing
   , tableExpr
@@ -26,11 +29,46 @@ import Database.Selda.Generic
 import Database.Selda.Table.Type
 import Database.Selda.Table.Validation (snub)
 
+#if MIN_VERSION_base(4, 9, 0)
+import GHC.OverloadedLabels
+#if !MIN_VERSION_base(4, 10, 0)
+import GHC.Prim
+#endif
+
+instance forall x t a. IsLabel x (Selector t a) => IsLabel x (Group t a) where
+#if MIN_VERSION_base(4, 10, 0)
+  fromLabel = Single (fromLabel @x)
+#else
+  fromLabel _ = Single (fromLabel (proxy# :: Proxy# x))
+#endif
+
+#endif
+
+-- | A group of one or more selectors.
+--   A selector group is either a selector (i.e. @#id@), or an inductive
+--   tuple of selectors (i.e. @#foo :*: #bar@).
+class SelectorGroup g where
+  indices :: g t a -> [Int]
+
+instance SelectorGroup Selector where
+  indices s = [selectorIndex s]
+instance SelectorGroup Group where
+  indices (s :+ ss)  = selectorIndex s : indices ss
+  indices (Single s) = [selectorIndex s]
+
+-- | A non-empty list of selectors, where the element selectors need not have
+--   the same type.
+data Group t a where
+  (:+)   :: Selector t a -> Group t b -> Group t (a :*: b)
+  Single :: Selector t a -> Group t a
+infixr 1 :+
+
 -- | A generic column attribute.
 --   Essentially a pair or a record selector over the type @a@ and a column
 --   attribute.
 data Attr a where
-  (:-) :: Selector a b -> Attribute a b -> Attr a
+  (:-) :: SelectorGroup g => g t a -> Attribute g t a -> Attr t
+infixl 0 :-
 
 -- | Generate a table from the given table name and list of column attributes.
 --   All @Maybe@ fields in the table's type will be represented by nullable
@@ -75,7 +113,7 @@ table tn attrs = tableFieldMod tn attrs id
 -- >   deriving Generic
 -- >
 -- > people :: Table Person
--- > people = tableFieldMod "people" [personName :- autoPrimaryGen] (stripPrefix "person")
+-- > people = tableFieldMod "people" [personName :- autoPrimaryGen] (fromJust . stripPrefix "person")
 --
 --   This will create a table with the columns named
 --   @Id@, @Name@, @Age@ and @Pet@.
@@ -88,20 +126,34 @@ tableFieldMod tn attrs fieldMod = Table
   { tableName = tn
   , tableCols = map tidy cols
   , tableHasAutoPK = apk
+  , tableAttrs = combinedAttrs
   }
   where
+    combinedAttrs =
+      [ (ixs, a)
+      | sel :- Attribute [a] <- attrs
+      , let ixs = indices sel
+      , case ixs of
+          []  -> False
+          [_] -> False
+          _   -> True
+      ]
     cols = zipWith addAttrs [0..] (tblCols (Proxy :: Proxy a) fieldMod)
     apk = or [AutoIncrement `elem` as | _ :- Attribute as <- attrs]
     addAttrs n ci = ci
       { colAttrs = colAttrs ci ++ concat
           [ as
           | sel :- Attribute as <- attrs
-          , selectorIndex sel == n
+          , case indices sel of
+              [colIx] -> colIx == n
+              _       -> False
           ]
       , colFKs = colFKs ci ++
           [ thefk
           | sel :- ForeignKey thefk <- attrs
-          , selectorIndex sel == n
+          , case indices sel of
+              [colIx] -> colIx == n
+              _       -> False
           ]
       }
 
@@ -111,42 +163,42 @@ tidy ci = ci {colAttrs = snub $ colAttrs ci}
 
 -- | Some attribute that may be set on a column of type @c@, in a table of
 --   type @t@.
-data Attribute t c
+data Attribute (g :: * -> * -> *) t c
   = Attribute [ColAttr]
   | ForeignKey (Table (), ColName)
 
 -- | A primary key which does not auto-increment.
-primary :: Attribute t c
+primary :: Attribute Selector t c
 primary = Attribute [Primary, Required, Unique]
 
 -- | Create an index on this column.
-index :: Attribute t c
+index :: Attribute Selector t c
 index = Attribute [Indexed Nothing]
 
 -- | Create an index using the given index method on this column.
-indexUsing :: IndexMethod -> Attribute t c
+indexUsing :: IndexMethod -> Attribute Selector t c
 indexUsing m = Attribute [Indexed (Just m)]
 
 -- | An auto-incrementing primary key.
-autoPrimary :: Attribute t (ID t)
+autoPrimary :: Attribute Selector t (ID t)
 autoPrimary = Attribute [Primary, AutoIncrement, Required, Unique]
 
 -- | An untyped auto-incrementing primary key.
 --   You should really only use this for ad hoc tables, such as tuples.
-untypedAutoPrimary :: Attribute t RowID
+untypedAutoPrimary :: Attribute Selector t RowID
 untypedAutoPrimary = Attribute [Primary, AutoIncrement, Required, Unique]
 
 -- | A table-unique value.
-unique :: Attribute t c
+unique :: SelectorGroup g => Attribute g t a
 unique = Attribute [Unique]
 
-mkFK :: Table t -> Selector a b -> Attribute c d
-mkFK (Table tn tcs tapk) sel =
-  ForeignKey (Table tn tcs tapk, colName (tcs !! selectorIndex sel))
+mkFK :: Table t -> Selector a b -> Attribute Selector c d
+mkFK (Table tn tcs tapk tas) sel =
+  ForeignKey (Table tn tcs tapk tas, colName (tcs !! selectorIndex sel))
 
 class ForeignKey a b where
   -- | A foreign key constraint referencing the given table and column.
-  foreignKey :: Table t -> Selector t a -> Attribute self b
+  foreignKey :: Table t -> Selector t a -> Attribute Selector self b
 
 instance ForeignKey a a where
   foreignKey = mkFK

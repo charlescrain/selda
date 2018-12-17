@@ -57,13 +57,20 @@ sqliteBackend db = SeldaBackend
   , disableForeignKeys = disableFKs db
   }
 
-sqliteGetTableInfo :: Database -> Text -> IO [ColumnInfo]
+sqliteGetTableInfo :: Database -> Text -> IO TableInfo
 sqliteGetTableInfo db tbl = do
     cols <- (snd . snd) <$> sqliteQueryRunner db tblinfo []
     indexes <- (snd . snd) <$> sqliteQueryRunner db indexes []
     fks <- (snd . snd) <$> sqliteQueryRunner db fklist []
     indexes' <- mapM indexInfo indexes
-    mapM (describe fks indexes') cols
+    colInfos <- mapM (describe fks indexes') cols
+    return $ TableInfo
+      { tableColumnInfos = colInfos
+      , tableUniqueGroups =
+        [ map mkColName names
+        | (names@(_:_:_), "u") <- indexes'
+        ]
+      }
   where
     tblinfo = mconcat ["PRAGMA table_info(", tbl, ");"]
     indexes = mconcat ["PRAGMA index_list(", tbl, ");"]
@@ -82,9 +89,9 @@ sqliteGetTableInfo db tbl = do
     toTypeRep _ typ                         = Left typ
 
     indexInfo [_, SqlString ixname, _, SqlString itype, _] = do
-      let q = (ixinfo ixname)
-      [[_, _, SqlString name]] <- (snd . snd) <$> sqliteQueryRunner db q []
-      return (name, itype)
+      let q = ixinfo ixname
+      info <- (snd . snd) <$> sqliteQueryRunner db q []
+      return $ (map (\[_,_,SqlString name] -> name) info, itype)
     indexInfo _ = do
       error "unreachable"
 
@@ -94,8 +101,8 @@ sqliteGetTableInfo db tbl = do
         , colType = toTypeRep (pk == 1) (toLower ty)
         , colIsPK = pk == 1
         , colIsAutoIncrement = "auto_increment" `isSuffixOf` ty
-        , colIsUnique = any (== (name, "u")) ixs || pk == 1
-        , colHasIndex = any (== (name, "c")) ixs
+        , colHasIndex = any (== ([name], "c")) ixs
+        , colIsUnique = any (== ([name], "u")) ixs || pk == 1
         , colIsNullable = nonnull == 0
         , colFKs =
             [ (mkTableName reftbl, mkColName refkey)
